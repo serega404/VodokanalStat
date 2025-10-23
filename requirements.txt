@@ -1,0 +1,5 @@
+telethon==1.41.2
+beautifulsoup4==4.14.2
+matplotlib==3.10.5
+numpy==2.3.2
+requests==2.32.4

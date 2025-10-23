@@ -1,0 +1,2 @@
+59 23 * * 0  cd /app && python3 /app/main.py --weekly
+0 0 1 * * cd /app && python3 /app/main.py --monthly
