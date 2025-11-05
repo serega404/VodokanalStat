@@ -53,7 +53,7 @@ python main.py
 docker run -it --rm \
   --env-file .env \
   -v "$(pwd)/data:/app/data:Z" \
-  docker.io/library/vodokanalstat-app python3 /app/main.py --auth
+  ghcr.io/serega404/vodokanalstat:main python3 /app/main.py --auth
 ```
 
 Запуск:
