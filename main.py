@@ -96,6 +96,10 @@ def main(days_count: int):
             if msg_date < start_date:
                 break
 
+            # Пропускаем пересланные сообщения
+            if getattr(message, 'fwd_from', None):
+                continue
+
             text = message.text or ""
             if not text:
                 continue
