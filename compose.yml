@@ -1,0 +1,14 @@
+services:
+  app:
+    # image: ghcr.io/serega404/vodokanalstat:main
+    container_name: vodokanalstat_app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data:Z
+    environment:
+      TZ: ${TZ:-Europe/Moscow}
