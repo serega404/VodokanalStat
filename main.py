@@ -11,6 +11,8 @@ import asyncio
 from collections import Counter
 
 from telethon import TelegramClient
+import requests
+import json
 
 from report import create_report
 
@@ -20,11 +22,46 @@ API_ID = int(os.environ.get('TG_API_ID', '0'))
 API_HASH = os.environ.get('TG_API_HASH', '')
 TELEGRAM_CHANNEL = os.environ.get('TG_CHANNEL', '')
 SEND_TO = os.environ.get('TG_SEND_TO', TELEGRAM_CHANNEL)
+BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '').strip()
 
 SEND_SILENT = os.environ.get('SEND_SILENT', '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 _TIME_RANGE_PATTERN = re.compile(r"(\d{1,2})\s*[-:]\s*(\d{2})")
 _HOUR_ONLY_PATTERN = re.compile(r"(\d{1,2})\s*ч\b", re.IGNORECASE)
+
+def send_report_via_bot(files, message_text):
+    base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+    media = []
+    files_payload = {}
+    for idx, path in enumerate(files):
+        attach_name = f"file{idx}"
+        files_payload[attach_name] = open(path, "rb")
+        item = {
+            "type": "photo",
+            "media": f"attach://{attach_name}",
+        }
+        if idx == 0:
+            item["caption"] = message_text
+        media.append(item)
+
+    try:
+        resp = requests.post(
+            f"{base_url}/sendMediaGroup",
+            data={
+                "chat_id": SEND_TO,
+                "disable_notification": SEND_SILENT,
+                "media": json.dumps(media),
+            },
+            files=files_payload,
+            timeout=90,
+        )
+        if not resp.ok:
+            print(f"Ошибка отправки: {resp.status_code} {resp.text}")
+            exit(1)
+    finally:
+        for fh in files_payload.values():
+            fh.close()
 
 def days_in_prev_month():
     today = datetime.datetime.now()
@@ -37,7 +74,6 @@ def days_in_prev_month():
     else:
         prev_month = month - 1
     return calendar.monthrange(year, prev_month)[1]
-
 
 def extract_time(text):
     # Извлекает время из строки. Возвращает объект datetime.time или None.
@@ -126,12 +162,16 @@ async def main(days_count: int):
             parsed_messages_count=parsed_messages_count,
             days_count=days_count,
         )
-        await client.send_file(
-            SEND_TO,
-            files,
-            caption=message_text,
-            silent=SEND_SILENT
-        )
+        
+        if not BOT_TOKEN:
+            await client.send_file(
+                SEND_TO,
+                files,
+                caption=message_text,
+                silent=SEND_SILENT
+            )
+        else:
+            send_report_via_bot(files, message_text)
 
 if __name__ == "__main__":
     if not os.path.exists('data'):
