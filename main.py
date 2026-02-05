@@ -292,6 +292,10 @@ async def main():
         print(f"Включаем пересылку сообщений из {FORWARD_FROM} в {FORWARD_TO}")
         @client.on(events.NewMessage(chats=FORWARD_FROM))
         async def forward_handler(event):
+            text = event.message.text or ""
+            if not any(keyword in text.lower() for keyword in ["аварийные", "работы", "продлены", "аварийных", "работ", "продлеваются"]):
+                return
+            
             try:
                 if BOT_TOKEN:
                     await forward_via_bot(event.message, FORWARD_TO)
