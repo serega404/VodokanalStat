@@ -9,11 +9,8 @@ WORKDIR /app
 COPY requirements.txt requirements.txt
 RUN pip3 install -r requirements.txt
 
-# Setting up crontab
-COPY crontab /tmp/crontab
-RUN cat /tmp/crontab > /etc/crontabs/root
-
+COPY report.py report.py
 COPY main.py main.py
 
-# run crond as main process of container
-CMD ["crond", "-f", "-l", "2"]
+# run python daemon
+CMD ["python3", "main.py", "--monthly"]

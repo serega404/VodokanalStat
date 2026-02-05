@@ -10,7 +10,9 @@ import argparse
 import asyncio
 from collections import Counter
 
-from telethon import TelegramClient
+from telethon import TelegramClient, events
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 import requests
 import json
 
@@ -21,6 +23,8 @@ from report import create_report
 API_ID = int(os.environ.get('TG_API_ID', '0'))
 API_HASH = os.environ.get('TG_API_HASH', '')
 TELEGRAM_CHANNEL = os.environ.get('TG_CHANNEL', '')
+FORWARD_FROM = os.environ.get('TG_FORWARD_FROM', '')
+FORWARD_TO = os.environ.get('TG_FORWARD_TO', TELEGRAM_CHANNEL)
 SEND_TO = os.environ.get('TG_SEND_TO', TELEGRAM_CHANNEL)
 BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '').strip()
 
@@ -63,6 +67,74 @@ def send_report_via_bot(files, message_text):
         for fh in files_payload.values():
             fh.close()
 
+async def forward_via_bot(message, target_chat):
+    base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
+    
+    # Ensure temp dir
+    temp_dir = os.path.join("data", "temp_forward")
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
+
+    try:
+        if message.media:
+            path = await message.download_media(file=temp_dir)
+            
+            if not path:
+                 if message.text:
+                     data = {"chat_id": target_chat, "text": message.text, "disable_notification": SEND_SILENT}
+                     await asyncio.to_thread(requests.post, f"{base_url}/sendMessage", data=data)
+                 return
+
+            method = "sendDocument"
+            file_key = "document"
+            
+            if getattr(message, 'photo', None):
+                method = "sendPhoto"
+                file_key = "photo"
+            elif getattr(message, 'video', None):
+                method = "sendVideo"
+                file_key = "video"
+            elif getattr(message, 'voice', None):
+                method = "sendVoice"
+                file_key = "voice"
+            elif getattr(message, 'audio', None):
+                method = "sendAudio"
+                file_key = "audio"
+            
+            if not os.path.exists(path):
+                 return
+
+            with open(path, "rb") as f:
+                data = {
+                    "chat_id": target_chat,
+                    "caption": message.text or "",
+                    "disable_notification": SEND_SILENT
+                }
+                files = {file_key: f}
+                
+                resp = await asyncio.to_thread(requests.post, f"{base_url}/{method}", data=data, files=files)
+            
+            try:
+                os.remove(path)
+            except:
+                pass
+                
+            if not resp.ok:
+                 print(f"Ошибка Bot API ({method}): {resp.status_code} {resp.text}")
+
+        elif message.text:
+            data = {
+                "chat_id": target_chat,
+                "text": message.text,
+                "disable_notification": SEND_SILENT
+            }
+            resp = await asyncio.to_thread(requests.post, f"{base_url}/sendMessage", data=data)
+            if not resp.ok:
+                print(f"Ошибка Bot API (sendMessage): {resp.status_code} {resp.text}")
+
+    except Exception as e:
+        print(f"Ошибка forward_via_bot: {e}")
+
 def days_in_prev_month():
     today = datetime.datetime.now()
     year = today.year
@@ -97,13 +169,9 @@ def extract_time(text):
             return None
     return None
 
-async def main(days_count: int):
-    if (not TELEGRAM_CHANNEL) or (TELEGRAM_CHANNEL.strip() == ''):
-        print("Ошибка: переменная окружения TG_CHANNEL должна быть установлена.")
-        exit(1)
-    
-    client = TelegramClient('data/session', API_ID, API_HASH)
-    async with client:
+async def report_job(client, days_count: int):
+    print(f"Формирование отчета за {days_count} дн.")
+    try:
         channel = await client.get_entity(TELEGRAM_CHANNEL)
         if isinstance(channel, list):
             channel = channel[0]
@@ -150,9 +218,6 @@ async def main(days_count: int):
         channel_name = getattr(channel, 'title', 'Unknown Channel')
         print(f"Получено {total_messages} сообщений из {channel_name} за последние {days_count} дней.")
         print(f"Найдено {parsed_messages_count} сообщений с временной меткой")
-        # for dt, txt in time_messages:
-            # parsed_time = extract_time(txt)
-            # print(f"{dt}: {txt} -> {parsed_time}")
 
         files, message_text = create_report(
             day_counter=day_counter,
@@ -171,9 +236,12 @@ async def main(days_count: int):
                 silent=SEND_SILENT
             )
         else:
-            send_report_via_bot(files, message_text)
+            await asyncio.to_thread(send_report_via_bot, files, message_text)
+            
+    except Exception as e:
+        print(f"Ошибка при формировании отчета: {e}")
 
-if __name__ == "__main__":
+async def main():
     if not os.path.exists('data'):
         os.makedirs('data')
 
@@ -181,40 +249,86 @@ if __name__ == "__main__":
         print("Ошибка: переменные окружения TG_API_ID и TG_API_HASH должны быть установлены.")
         exit(1)
 
+    if (not TELEGRAM_CHANNEL) or (TELEGRAM_CHANNEL.strip() == ''):
+        print("Ошибка: переменная окружения TG_CHANNEL должна быть установлена.")
+        exit(1)
+
     parser = argparse.ArgumentParser(description="ВодоКанал статистика публикаций")
     parser.add_argument(
         "--weekly",
         action="store_true",
-        help="Сформировать статистику за последние 7 дней."
+        help="Включить еженедельные отчеты."
     )
     parser.add_argument(
         "--monthly",
         action="store_true",
-        help="Сформировать статистику за предыдущий полный месяц."
+        help="Включить ежемесячные отчеты."
     )
     parser.add_argument(
         "--auth",
         action="store_true",
         help="Создать сессию Telegram и завершить выполнение."
     )
+    parser.add_argument(
+        "--run-now",
+        action="store_true",
+        help="Запустить выбранные отчеты (weekly/monthly) немедленно при старте."
+    )
 
     args = parser.parse_args()
 
+    client = TelegramClient('data/session', API_ID, API_HASH)
+
     if args.auth:
-        async def auth():
-            client = TelegramClient('data/session', API_ID, API_HASH)
-            async with client:
-                pass
-            print("Сессия создана.")
         print("Создание сессии Telegram...")
-        asyncio.run(auth())
+        async with client:
+            pass
+        print("Сессия создана.")
         exit(0)
-    if args.weekly and args.monthly:
-        parser.error("Параметры --weekly и --monthly взаимоисключающие.")
+
+    await client.start()
+
+    if FORWARD_FROM:
+        print(f"Включаем пересылку сообщений из {FORWARD_FROM} в {FORWARD_TO}")
+        @client.on(events.NewMessage(chats=FORWARD_FROM))
+        async def forward_handler(event):
+            try:
+                if BOT_TOKEN:
+                    await forward_via_bot(event.message, FORWARD_TO)
+                else:
+                    # Отправляем копию сообщения (без тега пересылки)
+                    await client.send_message(FORWARD_TO, event.message.text, file=event.message.media, silent=SEND_SILENT)
+            except Exception as e:
+                print(f"Ошибка пересылки: {e}")
+
+    scheduler = AsyncIOScheduler()
+
+    async def monthly_wrapper():
+        days = days_in_prev_month()
+        await report_job(client, days)
+
+    if args.weekly:
+        # Каждый понедельник в 00:00
+        scheduler.add_job(report_job, CronTrigger(day_of_week='mon', hour=0, minute=0), args=[client, 7])
+        print("Планировщик: Weekly отчет включен (Пн, 00:00).")
+        
+        if args.run_now:
+            print("Instant Run: Запуск Weekly отчета...")
+            asyncio.create_task(report_job(client, 7))
 
     if args.monthly:
-        selected_days = days_in_prev_month()
-    else:
-        selected_days = 7
+        # 1 числа каждого месяца в 00:00
+        scheduler.add_job(monthly_wrapper, CronTrigger(day=1, hour=0, minute=0))
+        print("Планировщик: Monthly отчет включен (1-е число, 00:00).")
 
-    asyncio.run(main(selected_days))
+        if args.run_now:
+            print("Instant Run: Запуск Monthly отчета...")
+            asyncio.create_task(monthly_wrapper())
+
+    scheduler.start()
+    print("Сервис запущен.")
+    
+    await client.run_until_disconnected()
+
+if __name__ == "__main__":
+    asyncio.run(main())
