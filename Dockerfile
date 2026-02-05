@@ -12,5 +12,8 @@ RUN pip3 install -r requirements.txt
 COPY report.py report.py
 COPY main.py main.py
 
-# run python daemon
-CMD ["python3", "main.py", "--monthly"]
+# Ensure Python prints are unbuffered so Docker captures logs
+ENV PYTHONUNBUFFERED=1
+
+# run python daemon (use -u to make sure no buffering at interpreter level)
+CMD ["python3", "-u", "main.py", "--monthly"]
